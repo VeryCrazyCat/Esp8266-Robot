@@ -18,10 +18,16 @@
 
 #include <Hash.h>
 
+#include <Servo.h>
+
 ESP8266WiFiMulti WiFiMulti;
 
 #define LED 2
+Servo ESCLeft;
+int ESCLeft_value;
 
+Servo ESCRight;
+int ESCRight_value;
 
 //Your Domain name with URL path or IP address with path
 String serverName = "http://192.168.0.217:5000/";
@@ -32,10 +38,14 @@ unsigned long lastTime = 0;
 // Set timer to 5 seconds (5000)
 unsigned long timerDelay = 5000;
 
+
+
 WiFiClient client;
 HTTPClient http;
 
 void setup() {
+    ESCLeft_value = 0;
+    ESCRight_value = 0;
     // USE_SERIAL.begin(921600);
     Serial.begin(115200);
 
@@ -57,6 +67,9 @@ void setup() {
     Serial.println(WiFi.localIP());
 
     pinMode(LED, OUTPUT);
+
+    ESCLeft.attach(D3);
+    ESCRight.attach(D4);
     
 }
 void emit(String data1) {
@@ -87,7 +100,7 @@ void emit(String data1) {
 }
 
 void processActions(String actions) {
-  int arr[10];
+  int arr[99];
   int i,j,k=0;
   i = actions.indexOf('[');
     
@@ -101,19 +114,54 @@ void processActions(String actions) {
   
   for(i=0; i<k; ++i){
     if (arr[i] == 1) {
+      Serial.println("Received signal");
+      Serial.print(arr[i]);
+
       digitalWrite(LED, !digitalRead(LED));
       String stateStr = (!digitalRead(LED) == HIGH) ? "HIGH" : "LOW";
       Serial.println(stateStr);
       emit(stateStr);
     }
+    if (arr[i] == 11) {
+      Serial.println("Received signal");
+      Serial.print(arr[i]);
+
+      ESCLeft_value = 40;
+    }
+    if (arr[i] == 10) {
+      Serial.println("Received signal");
+      Serial.print(arr[i]);
+
+      ESCLeft_value = 0;
+    }
+
+    if (arr[i] == 21) {
+      Serial.println("Received signal");
+      Serial.print(arr[i]);
+
+      ESCRight_value = 40;
+    }
+    if (arr[i] == 20) {
+      Serial.println("Received signal");
+      Serial.print(arr[i]);
+
+      ESCRight_value = 0;
+    }
   }
 }
 void loop() {
-  
+  ESCLeft.write(ESCLeft_value);
+  ESCRight.write(ESCRight_value);
   String serverPath = serverName;
   
-
+  SSE();
  // int httpCode = http.GET();
+  
+
+  delay(1);
+}
+
+void SSE() {
   bool execute = true;
 
   if (!client.connected()) {
@@ -162,8 +210,6 @@ void loop() {
   } 
 
   http.end(); // Close the connection
-
-  delay(100);
 }
 
 void connectToServer() {
