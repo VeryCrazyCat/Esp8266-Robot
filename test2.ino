@@ -22,14 +22,15 @@
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 
-#include <EasyButton.h>
+
+#include <Preferences.h>
+Preferences prefs;
 
 ESP8266WiFiMulti WiFiMulti;
 
 #define LED 2
-#define BUTTON_PIN D0
+const int flashButtonPin = 0;
 
-EasyButton button(BUTTON_PIN);
 
 bool connectingToRemote = false;
 
@@ -97,8 +98,12 @@ const char index_html[] PROGMEM = R"rawliteral(
   <h2>STEM Fair 2025</h2>
   <p class="state"></p>
   <p><button id="toggle_button" class="button">Toggle</button></p>
-  <p><button id="toggle_motor1" class="button">Toggle Left Motor</button></p>
-  <p><button id="toggle_motor2" class="button">Toggle Right Motor</button></p>
+  <p>
+  <input class="motor1input">
+  <button id="toggle_motor1" class="button">Toggle Left Motor</button></p>
+  <p>
+  <input class="motor2input">
+  <button id="toggle_motor2" class="button">Toggle Right Motor</button></p>
   <p>_________________________</p>
   <h2>Connect to Wifi network</h2>
   <p class="display"></p>
@@ -147,13 +152,26 @@ const char index_html[] PROGMEM = R"rawliteral(
     document.getElementById('toggle_motor2').addEventListener('click', toggleMotor2);
   }
   function toggleLED(){
-    websocket.send('toggle');
+    const data = {
+      LED: 0,
+    };
+    websocket.send(JSON.stringify(data));
   }
-  function toggleMotor1(){
-    websocket.send('motor1');
+  function toggleMotor2() {
+    let speed_ = document.querySelector(".motor2input").value
+    const data = {
+      motor: 2,
+      speed: speed_,
+    };
+    websocket.send(JSON.stringify(data));
   }
-  function toggleMotor2(){
-    websocket.send('motor2');
+  function toggleMotor1() {
+    let speed_ = document.querySelector(".motor1input").value
+    const data = {
+      motor: 1,
+      speed: speed_,
+    };
+    websocket.send(JSON.stringify(data));
   }
   </script> 
 </body>
@@ -172,51 +190,46 @@ void flashLED(int number) {
   }
 }
 
-//SET UP WIFI CONNECTION INTERFACE
-
-void switchModes() {
-  if (mode == 0) {
-    mode = 1;
-    setupremote();
-  }
-  if (mode==1) {
-    mode= 0;
-    setup();
-  }
-}
-
-
 //https://randomnerdtutorials.com/esp8266-nodemcu-websocket-server-arduino/.
 
 void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo*)arg;
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
     data[len] = 0;
-    if (strcmp((char*)data, "toggle") == 0) {
-      digitalWrite(LED, !digitalRead(LED));
-      //notifyClients();
-    }
-    if (strcmp((char*)data, "motor1") == 0) {
-      if (ESCLeft_value == 40) {
-        ESCLeft_value = 0;
+    StaticJsonDocument<200> doc;
+    
+    DeserializationError error = deserializeJson(doc, data);
+    
+    if (!error) {
+      // Motor control commands
+      if (doc.containsKey("motor")) {
+        int motor = doc["motor"];
+        int speed = doc["speed"];
+        
+        if (motor == 1) {
+          ESCLeft_value = speed;
+          Serial.printf("Left motor set to: %d\n", speed);
+        } 
+        else if (motor == 2) {
+          ESCRight_value = speed;
+          Serial.printf("Right motor set to: %d\n", speed);
+        }
+        
+        // Immediate update
+        ESCLeft.writeMicroseconds(ESCLeft_value);
+        ESCRight.writeMicroseconds(ESCRight_value);
       }
-      else{
-        ESCLeft_value = 40;
+      
+      // LED toggle
+      if (doc.containsKey("LED")) {
+        digitalWrite(LED, !digitalRead(LED));
       }
-      //notifyClients();
-    }
-    if (strcmp((char*)data, "motor2") == 0) {
-      if (ESCRight_value == 40) {
-        ESCRight_value = 0;
-      }
-      else{
-        ESCRight_value = 40;
-      }
-      //notifyClients();
     }
   }
 }
 
+
+//Follows Websocket protocol
 void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
              void *arg, uint8_t *data, size_t len) {
     switch (type) {
@@ -240,23 +253,40 @@ void initWebSocket() {
   server.addHandler(&ws);
 }
 
-
 void setup() {
-  ESCLeft.attach(D3);
-  ESCRight.attach(D4);
+  flashLED(1);
+  pinMode(LED, OUTPUT);
+  ESCLeft.attach(D1);
+  ESCRight.attach(D2);
   ESCLeft_value = 0;
   ESCRight_value = 0;
+  ESCLeft.write(0);
+  ESCRight.write(0);
   Serial.begin(115200);
+  pinMode(flashButtonPin, INPUT_PULLUP);
+  prefs.begin("stem-fair");
 
-  button.begin();
-  button.onPressed(switchModes);
+  if (prefs.getInt("mode", 0) == 0) {
+    Serial.println("Setting up AP server");
+    setupap();
+  }
+  if (prefs.getInt("mode", 0) == 1) {
+    remote_ssid = prefs.getString("remote_ssid");
+    remote_password = prefs.getString("remote_password");
+    Serial.println("Setting up remote on network: ");
+    Serial.print(remote_ssid);
+    setupremote();
+  }
+
+}
+void setupap() {
+  
 
   WiFi.mode(WIFI_AP);
   mode = 0;
   
 
-  ESCLeft_value = 0;
-  ESCRight_value = 0;
+  
   
   // put your setup code here, to run once:
   WiFi.softAP(ssid, password);
@@ -288,42 +318,40 @@ void setup() {
   server.on("/switchToRemote", HTTP_POST, [](AsyncWebServerRequest *request) {
     
     flashLED(4);
-    endServer = true;
+    registerSetupRemote();
   });
   initWebSocket();
   server.begin();
-  pinMode(LED, OUTPUT);
+  
 }
 
 void registerSetupRemote() {
-  endServer = false;
-  setupremote();
+  prefs.putInt("mode", 1);
+  prefs.putString("remote_ssid", remote_ssid);
+  prefs.putString("remote_password", remote_password);
+  ESP.restart();
 
 }
+
+void registerSetupAP() {
+  prefs.putInt("mode", 0);
+  ESP.restart();
+
+}
+
 
 
 //SETUP REMOTE, CONNECTING TO SERVER AND AUTOMATIC DRIVING
 
 void setupremote() {
-  ws.closeAll();
   
-  //server.end(); // Stop the web server
-  //server.reset();
-  WiFi.softAPdisconnect(true);
-  Serial.println("Server ended");
-  
-  // USE_SERIAL.begin(921600);
-  Serial.println("Disconnecting from network");
-  WiFi.disconnect();
-  while (WiFi.status() != WL_DISCONNECTED) {
-    Serial.print(".");
-    delay(100);
-  }
   Serial.printf("Connecting to %s\n", remote_ssid);
   WiFi.begin(remote_ssid.c_str(), remote_password.c_str());
   
   unsigned long startTime = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - startTime < 20000) {
+    ESCLeft.write(0);
+    ESCRight.write(0);
     delay(500);
     Serial.print(".");
   }
@@ -342,6 +370,8 @@ void setupremote() {
 
   
   mode = 1;
+
+  flashLED(3);
     
 }
 
@@ -427,16 +457,21 @@ void processActions(String actions) {
 }
 void loop() {
   //button.read();
-  ws.cleanupClients();
-  ESCLeft.write(ESCLeft_value);
-  ESCRight.write(ESCRight_value);
-  if (endServer == true) {
-    Serial.println("Received end server signal");
-    registerSetupRemote();
+  //if (mode == 0) {
+  //  ws.cleanupClients();
+  //}
+  
+  ESCLeft.writeMicroseconds(ESCLeft_value);
+  ESCRight.writeMicroseconds(ESCRight_value);
+  int buttonState = digitalRead(flashButtonPin);
+
+  if (buttonState == LOW) { // Flash button pressed
+    Serial.println("Button pressed!");
+    registerSetupAP();
+    delay(200); 
   }
   if (mode == 1) {
-    
-    SSE(); // Only run SSE after connection is established
+    SSE();
   };
   
  // int httpCode = http.GET();
