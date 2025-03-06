@@ -5,6 +5,11 @@
  *
  */
 
+
+
+#include <iostream>
+#include <cmath>
+
 #include <Arduino.h>
 
 #include <ESP8266WiFi.h>
@@ -58,6 +63,8 @@ HTTPClient http;
 
 String remote_ssid     = "ESP8266-Access-Point";
 String remote_password = "123456789";
+String server_domain = "192.168.0.217";
+String server_port = "5000";
 
 const char* ssid     = "ESP8266-Access-Point";
 const char* password = "123456789";
@@ -112,6 +119,8 @@ const char index_html[] PROGMEM = R"rawliteral(
   <input type="text" name="wifi-name" value="VM7893174">
   <p>Enter network password here:</p>
   <input type="text" name="wifi-password" value="svgMrsTeacgsi8yt">
+  <p>Enter server domain here:</p>
+  <input type="text" name="server-domain" value="192.168.0.217">
   <input type="submit" value="Post Credentials">
   </form>
 
@@ -196,7 +205,7 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
   AwsFrameInfo *info = (AwsFrameInfo*)arg;
   if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
     data[len] = 0;
-    StaticJsonDocument<200> doc;
+    StaticJsonDocument<512> doc;
     
     DeserializationError error = deserializeJson(doc, data);
     
@@ -230,8 +239,8 @@ void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
 
 
 //Follows Websocket protocol
-void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
-             void *arg, uint8_t *data, size_t len) {
+void IRAM_ATTR onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
+                      AwsEventType type, void *arg, uint8_t *data, size_t len) {
     switch (type) {
       case WS_EVT_CONNECT:
         Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
@@ -273,6 +282,7 @@ void setup() {
   if (prefs.getInt("mode", 0) == 1) {
     remote_ssid = prefs.getString("remote_ssid");
     remote_password = prefs.getString("remote_password");
+    server_domain = prefs.getString("server_domain");
     Serial.println("Setting up remote on network: ");
     Serial.print(remote_ssid);
     setupremote();
@@ -304,12 +314,15 @@ void setupap() {
   server.on("/postForm", HTTP_POST, [](AsyncWebServerRequest *request) {
     remote_ssid = request->arg("wifi-name");
     remote_password = request->arg("wifi-password");
+    server_domain = request->arg("server-domain");
     
     Serial.println("\nCredentials Received:");
     Serial.print("SSID: ");
     Serial.println(remote_ssid);
     Serial.print("Password: ");
     Serial.println(remote_password);
+    Serial.print("Server domain: ");
+    Serial.println(server_domain);
     
     flashLED(2);
     request->send_P(200, "text/html", index_html);
@@ -329,6 +342,7 @@ void registerSetupRemote() {
   prefs.putInt("mode", 1);
   prefs.putString("remote_ssid", remote_ssid);
   prefs.putString("remote_password", remote_password);
+  prefs.putString("server_domain", server_domain);
   ESP.restart();
 
 }
@@ -376,7 +390,7 @@ void setupremote() {
 }
 
 //EMIT DATA BACK TO SERVER
-void emit(String data1) {
+void emitData(String data1) {
   WiFiClient client;
   HTTPClient http;
   String serverPath = serverName;
@@ -419,46 +433,41 @@ void processActions(String actions) {
   }
   
   for(i=0; i<k; ++i){
-    if (arr[i] == 1) {
+    
+    if (!arr[i] == 0) {
+      Serial.println(ndigit(arr[i], 1));
       Serial.println("Received signal");
       Serial.print(arr[i]);
+    }
+    if (ndigit(arr[i], 1) == 1) {
 
       digitalWrite(LED, !digitalRead(LED));
       String stateStr = (!digitalRead(LED) == HIGH) ? "HIGH" : "LOW";
       Serial.println(stateStr);
-      emit(stateStr);
+      emitData(stateStr);
     }
-    if (arr[i] == 11) {
-      Serial.println("Received signal");
-      Serial.print(arr[i]);
-
-      ESCLeft_value = 40;
-    }
-    if (arr[i] == 10) {
-      Serial.println("Received signal");
-      Serial.print(arr[i]);
-
-      ESCLeft_value = 0;
-    }
-
-    if (arr[i] == 21) {
-      Serial.println("Received signal");
-      Serial.print(arr[i]);
-
-      ESCRight_value = 40;
-    }
-    if (arr[i] == 20) {
-      Serial.println("Received signal");
-      Serial.print(arr[i]);
-
-      ESCRight_value = 0;
+    if (ndigit(arr[i], 1) == 2) { //1 -> motor
+    
+      //Example format: 1 1 1030
+      //1 -> motor
+      //1 -> right motor
+      //1030 -> motor speed
+      int motor_speed = arr[i] % 10000; // last 4 digits
+      Serial.println("Motor speed: ");
+      Serial.print(motor_speed);
+      if (ndigit(arr[i], 2) == 0) {
+        ESCLeft_value = motor_speed;
+      }
+      if (ndigit(arr[i], 2) == 1) {
+        ESCRight_value = motor_speed;
+      }
     }
   }
 }
 void loop() {
   //button.read();
   //if (mode == 0) {
-  //  ws.cleanupClients();
+   // ws.cleanupClients();
   //}
   
   ESCLeft.writeMicroseconds(ESCLeft_value);
@@ -536,16 +545,60 @@ void SSE() {
 void connectToServer() {
   //Serial.printf("Connecting to %s:%d...\n", "192.168.0.217", 5000);
   
-  if (!client.connect("192.168.0.217", 5000)) {
-    Serial.println("Connection failed!");
-    return;
-  }
-
-  //Serial.println("Connected to server!");
+  // if (!client.connect(server_domain, server_port)) {
+  //   Serial.println("Connection failed!");
+  //   return;
+  // }
   
+  //Serial.println("Connected to server!");
+  char domain[40];
+  server_domain.toCharArray(domain, 40);
+  int port = server_port.toInt();
   // Send SSE HTTP request
   client.print("GET /sse HTTP/1.1\r\n");
-  client.printf("Host: %s\r\n", "192.168.0.217");
+  client.printf("Host: %s\r\n", domain);
   client.print("Accept: text/event-stream\r\n");
   client.print("Connection: keep-alive\r\n\r\n");
+}
+
+
+// Function to get the n-th digit of a number (DEEPSEEK)
+int ndigit(int number, int position) {
+    number = abs(number);
+    
+    // Handle invalid positions
+    if(position <= 0) return -1;
+    
+    // Count total digits
+    int digitCount = number == 0 ? 1 : 0;
+    int temp = number;
+    while(temp != 0) {
+        digitCount++;
+        temp /= 10;
+    }
+    
+    // Position exceeds number length
+    if(position > digitCount) return -1;
+    
+    // Calculate divisor using integer math
+    int divisor = 1;
+    for(int i = 1; i < digitCount - position + 1; i++) {
+        divisor *= 10;
+    }
+    
+    return (number / divisor) % 10;
+}
+
+
+int middlendigit(int number, int startPos, int n) {
+    number = abs(number);
+    // Calculate the number of digits in the number
+    int numDigits = number == 0 ? 1 : static_cast<int>(log10(number)) + 1;
+
+    // Calculate the divisor to isolate the middle n digits
+    int divisor = static_cast<int>(pow(10, numDigits - startPos - n));
+    // Extract the middle n digits
+    int middleNDigits = (number / divisor) % static_cast<int>(pow(10, n));
+
+    return middleNDigits;
 }
